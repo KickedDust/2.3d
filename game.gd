@@ -2,6 +2,7 @@ extends Node3D
 
 ## Gestiona la lógica principal del juego, incluyendo el menú de pausa.
 const SAVE_PATH := "user://savegame.save"
+const MAIN_MENU_SCENE := "res://MainMenu.tscn"
 const PAUSE_ACTION := "ui_cancel"
 
 @onready var pause_menu: CanvasLayer = $PauseMenu
@@ -17,6 +18,7 @@ func _ready() -> void:
     status_label.visible = false
     status_timer.one_shot = true
     status_timer.process_mode = Node.PROCESS_MODE_WHEN_PAUSED
+    _apply_pending_save_data()
 func _unhandled_input(event: InputEvent) -> void:
     if event.is_action_pressed(PAUSE_ACTION) and not event.is_echo():
         if get_tree().paused:
@@ -66,6 +68,11 @@ func _on_restart_button_pressed() -> void:
     get_tree().reload_current_scene()
 
 
+func _on_exit_button_pressed() -> void:
+    _resume_game()
+    get_tree().change_scene_to_file(MAIN_MENU_SCENE)
+
+
 func _on_status_timer_timeout() -> void:
     _clear_status_message()
 
@@ -82,3 +89,25 @@ func _clear_status_message() -> void:
     if status_timer.is_stopped():
         return
     status_timer.stop()
+
+
+func _apply_pending_save_data() -> void:
+    if not get_tree().has_meta("load_game_data"):
+        return
+
+    var save_data := get_tree().get_meta("load_game_data")
+    get_tree().remove_meta("load_game_data")
+
+    if typeof(save_data) != TYPE_DICTIONARY:
+        push_warning("[Game] El formato de guardado no es válido.")
+        return
+
+    if save_data.has("player"):
+        var player_data := save_data["player"]
+        if typeof(player_data) == TYPE_DICTIONARY:
+            if player_data.has("position"):
+                player.global_position = player_data["position"]
+                player.initial_position = player.global_position
+                player.velocity = Vector3.ZERO
+            if player_data.has("coins"):
+                player.coins = int(player_data["coins"])
