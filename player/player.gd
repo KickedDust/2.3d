@@ -1,9 +1,14 @@
 class_name Player extends CharacterBody3D
 
 
+signal health_changed(current: float, maximum: float)
+signal power_changed(current: float, maximum: float)
+signal died
+
+
 enum _Anim {
-	FLOOR,
-	AIR,
+        FLOOR,
+        AIR,
 }
 
 const SHOOT_TIME = 1.5
@@ -13,6 +18,8 @@ const MAX_SPEED = 6.0
 const TURN_SPEED = 40.0
 const JUMP_VELOCITY = 12.5
 const BULLET_SPEED = 20.0
+const SHOOT_POWER_COST = 10.0
+const POWER_REGEN_RATE = 8.0
 const AIR_IDLE_DEACCEL = false
 const ACCEL = 14.0
 const DEACCEL = 14.0
@@ -27,23 +34,39 @@ var shoot_blend := 0.0
 # Number of coins collected.
 var coins := 0
 
+@export var max_health := 100.0
+@export var max_power := 100.0
+
+var health := max_health
+var power := max_power
+
 @onready var initial_position := position
 @onready var gravity: Vector3 = ProjectSettings.get_setting("physics/3d/default_gravity") * \
-		ProjectSettings.get_setting("physics/3d/default_gravity_vector")
+                ProjectSettings.get_setting("physics/3d/default_gravity_vector")
 
 @onready var _camera := $Target/Camera3D as Camera3D
 @onready var _animation_tree := $AnimationTree as AnimationTree
 
 
-func _physics_process(delta):
-	if Input.is_action_pressed("reset_position") or global_position.y < -12:
-		# Player hit the reset button or fell off the map.
-		position = initial_position
-		velocity = Vector3.ZERO
+func _ready() -> void:
+        health = max_health
+        power = max_power
+        emit_signal(&"health_changed", health, max_health)
+        emit_signal(&"power_changed", power, max_power)
 
-	# Update coin count and its "parallax" copies.
-	# This gives text a pseudo-3D appearance while still using Label3D instead of the more limited TextMesh.
-	%CoinCount.text = str(coins)
+
+func _physics_process(delta):
+        if Input.is_action_pressed("reset_position") or global_position.y < -12:
+                # Player hit the reset button or fell off the map.
+                position = initial_position
+                velocity = Vector3.ZERO
+
+        if power < max_power:
+                restore_power(POWER_REGEN_RATE * delta)
+
+        # Update coin count and its "parallax" copies.
+        # This gives text a pseudo-3D appearance while still using Label3D instead of the more limited TextMesh.
+        %CoinCount.text = str(coins)
 	%CoinCount.get_node("Parallax").text = str(coins)
 	%CoinCount.get_node("Parallax2").text = str(coins)
 	%CoinCount.get_node("Parallax3").text = str(coins)
@@ -151,21 +174,22 @@ func _physics_process(delta):
 		if (shoot_blend < 0):
 			shoot_blend = 0
 
-	if shoot_attempt and not prev_shoot:
-		shoot_blend = SHOOT_TIME
-		var bullet := preload("res://player/bullet/bullet.tscn").instantiate() as Bullet
-		bullet.set_transform($Player/Skeleton/Bullet.get_global_transform().orthonormalized())
-		get_parent().add_child(bullet)
-		bullet.set_linear_velocity(
-			$Player/Skeleton/Bullet.get_global_transform().basis[2].normalized() * BULLET_SPEED
-		)
-		bullet.add_collision_exception_with(self)
-		$SoundShoot.play()
+        if shoot_attempt and not prev_shoot and power >= SHOOT_POWER_COST:
+                shoot_blend = SHOOT_TIME
+                var bullet := preload("res://player/bullet/bullet.tscn").instantiate() as Bullet
+                bullet.set_transform($Player/Skeleton/Bullet.get_global_transform().orthonormalized())
+                get_parent().add_child(bullet)
+                bullet.set_linear_velocity(
+                        $Player/Skeleton/Bullet.get_global_transform().basis[2].normalized() * BULLET_SPEED
+                )
+                bullet.add_collision_exception_with(self)
+                $SoundShoot.play()
+                spend_power(SHOOT_POWER_COST)
 
-	prev_shoot = shoot_attempt
+        prev_shoot = shoot_attempt
 
-	if is_on_floor():
-		# How much the player should be blending between the "idle" and "walk/run" animations.
+        if is_on_floor():
+                # How much the player should be blending between the "idle" and "walk/run" animations.
 		_animation_tree[&"parameters/run/blend_amount"] = horizontal_speed / MAX_SPEED
 
 		# How much the player should be running (as opposed to walking). 0.0 = fully walking, 1.0 = fully running.
@@ -177,9 +201,9 @@ func _physics_process(delta):
 
 
 func adjust_facing(facing: Vector3, target: Vector3, step: float, adjust_rate: float, \
-		current_gn: Vector3) -> Vector3:
-	var normal := target
-	var t := normal.cross(current_gn).normalized()
+                current_gn: Vector3) -> Vector3:
+        var normal := target
+        var t := normal.cross(current_gn).normalized()
 
 	var x := normal.dot(facing)
 	var y := t.dot(facing)
@@ -189,14 +213,61 @@ func adjust_facing(facing: Vector3, target: Vector3, step: float, adjust_rate: f
 	if absf(ang) < 0.001:
 		return facing
 
-	var s := signf(ang)
-	ang = ang * s
-	var turn := ang * adjust_rate * step
-	var a: float
-	if ang < turn:
-		a = ang
-	else:
-		a = turn
-	ang = (ang - a) * s
+        var s := signf(ang)
+        ang = ang * s
+        var turn := ang * adjust_rate * step
+        var a: float
+        if ang < turn:
+                a = ang
+        else:
+                a = turn
+        ang = (ang - a) * s
 
-	return (normal * cos(ang) + t * sin(ang)) * facing.length()
+        return (normal * cos(ang) + t * sin(ang)) * facing.length()
+
+
+func take_damage(amount: float) -> void:
+        if amount <= 0:
+                return
+        var new_health := clampf(health - amount, 0, max_health)
+        if is_equal_approx(new_health, health):
+                return
+        health = new_health
+        emit_signal(&"health_changed", health, max_health)
+        if health <= 0.0:
+                emit_signal(&"died")
+
+
+func restore_health(amount: float) -> void:
+        if amount <= 0:
+                return
+        var new_health := clampf(health + amount, 0, max_health)
+        if is_equal_approx(new_health, health):
+                return
+        health = new_health
+        emit_signal(&"health_changed", health, max_health)
+
+
+func spend_power(amount: float) -> void:
+        if amount <= 0:
+                return
+        var new_power := clampf(power - amount, 0, max_power)
+        if is_equal_approx(new_power, power):
+                return
+        power = new_power
+        emit_signal(&"power_changed", power, max_power)
+
+
+func restore_power(amount: float) -> void:
+        if amount <= 0:
+                return
+        var new_power := clampf(power + amount, 0, max_power)
+        if is_equal_approx(new_power, power):
+                return
+        power = new_power
+        emit_signal(&"power_changed", power, max_power)
+
+
+func emit_current_stats() -> void:
+        emit_signal(&"health_changed", health, max_health)
+        emit_signal(&"power_changed", power, max_power)

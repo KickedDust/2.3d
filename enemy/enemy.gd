@@ -5,10 +5,13 @@ const ACCEL = 5.0
 const DEACCEL = 20.0
 const MAX_SPEED = 2.0
 const ROT_SPEED = 1.0
+const DAMAGE_AMOUNT = 10.0
+const DAMAGE_COOLDOWN = 1.0
 
 var prev_advance := false
 var dying := false
 var rot_dir = 4
+var _damage_timer := 0.0
 
 @onready var gravity = ProjectSettings.get_setting("physics/3d/default_gravity") \
 		* ProjectSettings.get_setting("physics/3d/default_gravity_vector")
@@ -19,9 +22,11 @@ var rot_dir = 4
 
 
 func _integrate_forces(state: PhysicsDirectBodyState3D):
-	var delta := state.get_step()
-	var lin_velocity := state.get_linear_velocity()
-	var grav := state.get_total_gravity()
+        var delta := state.get_step()
+        if _damage_timer > 0.0:
+                _damage_timer -= delta
+        var lin_velocity := state.get_linear_velocity()
+        var grav := state.get_total_gravity()
 	# get_total_gravity returns zero for the first few frames, leading to errors.
 	if grav.is_zero_approx():
 		grav = gravity
@@ -37,22 +42,25 @@ func _integrate_forces(state: PhysicsDirectBodyState3D):
 		var contact_collider := state.get_contact_collider_object(i)
 		var contact_normal := state.get_contact_local_normal(i)
 
-		if is_instance_valid(contact_collider):
-			if contact_collider is Bullet and contact_collider.enabled:
-				dying = true
-				axis_lock_angular_x = false
-				axis_lock_angular_y = false
-				axis_lock_angular_z = false
-				collision_layer = 0
-				state.set_angular_velocity(-contact_normal.cross(up).normalized() * 33.0)
-				_animation_player.play(&"impact")
-				_animation_player.queue(&"extra/explode")
-				contact_collider.enabled = false
-				$SoundWalkLoop.stop()
-				$SoundHit.play()
-				return
+                if is_instance_valid(contact_collider):
+                        if contact_collider is Bullet and contact_collider.enabled:
+                                dying = true
+                                axis_lock_angular_x = false
+                                axis_lock_angular_y = false
+                                axis_lock_angular_z = false
+                                collision_layer = 0
+                                state.set_angular_velocity(-contact_normal.cross(up).normalized() * 33.0)
+                                _animation_player.play(&"impact")
+                                _animation_player.queue(&"extra/explode")
+                                contact_collider.enabled = false
+                                $SoundWalkLoop.stop()
+                                $SoundHit.play()
+                                return
+                        elif contact_collider is Player and _damage_timer <= 0.0:
+                                contact_collider.take_damage(DAMAGE_AMOUNT)
+                                _damage_timer = DAMAGE_COOLDOWN
 
-	var advance := _ray_floor.is_colliding() and not _ray_wall.is_colliding()
+        var advance := _ray_floor.is_colliding() and not _ray_wall.is_colliding()
 
 	var dir := ($Enemy/Skeleton as Node3D).get_transform().basis[2].normalized()
 	var deaccel_dir := dir
